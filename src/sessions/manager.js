@@ -6,7 +6,6 @@ import {
     makeCacheableSignalKeyStore,
     Browsers
 } from '@whiskeysockets/baileys';
-import QRCode from 'qrcode';
 import fs from 'fs';
 import path from 'path';
 import P from 'pino';
@@ -27,7 +26,7 @@ const baileysLogger = P({
 class SessionManager {
     constructor() {
         this.sessions = new Map(); // channelId -> { socket, saveCreds }
-        this.channels = new Map(); // channelId -> { status, qrCode, lastSeen }
+        this.channels = new Map(); // channelId -> { status, url_qrcode, lastSeen }
         this.qrPromises = new Map();
         this.connectingChannels = new Set();
     }
@@ -45,7 +44,7 @@ class SessionManager {
 
             this.channels.set(channelId, {
                 status: 'CREATED',
-                qrCode: null,
+                url_qrcode: null,
                 lastSeen: new Date()
             });
 
@@ -76,7 +75,7 @@ class SessionManager {
             return {
                 channelId,
                 status: this.channels.get(channelId).status,
-                qrCode: this.channels.get(channelId).qrCode
+                url_qrcode: this.channels.get(channelId).url_qrcode
             };
         } catch (error) {
             logger.error(`Erro ao criar canal ${channelId}:`, error.message);
@@ -220,7 +219,7 @@ class SessionManager {
             this.channels.set(channelId, {
                 ...this.channels.get(channelId),
                 status: 'CONNECTED',
-                qrCode: null,
+                url_qrcode: null,
                 lastSeen: new Date(),
                 reconnectAttempts: 0
             });
@@ -236,26 +235,17 @@ class SessionManager {
     }
 
     async handleQRCode(channelId, qr) {
-        try {
-            const qrCodeDataURL = await QRCode.toDataURL(qr);
-            this.channels.set(channelId, {
-                ...this.channels.get(channelId),
-                status: 'QRCODE',
-                qrCode: qrCodeDataURL,
-                lastSeen: new Date()
-            });
-            logger.info(`✅ QR Code pronto para canal ${channelId}`);
+        this.channels.set(channelId, {
+            ...this.channels.get(channelId),
+            status: 'QRCODE',
+            url_qrcode: qr,
+            lastSeen: new Date()
+        });
+        logger.info(`✅ QR Code pronto para canal ${channelId}`);
 
-            const qrPromise = this.qrPromises.get(channelId);
-            if (qrPromise) {
-                qrPromise.resolve();
-            }
-        } catch (error) {
-            logger.error(`Erro ao processar QR Code ${channelId}:`, error);
-            const qrPromise = this.qrPromises.get(channelId);
-            if (qrPromise) {
-                qrPromise.reject(error);
-            }
+        const qrPromise = this.qrPromises.get(channelId);
+        if (qrPromise) {
+            qrPromise.resolve();
         }
     }
 
@@ -320,7 +310,7 @@ class SessionManager {
             return {
                 channelId,
                 status: this.channels.get(channelId)?.status,
-                qrCode: this.channels.get(channelId)?.qrCode
+                url_qrcode: this.channels.get(channelId)?.url_qrcode
             };
         } catch (error) {
             logger.error(`Erro ao regenerar QR Code ${channelId}:`, error);
@@ -359,7 +349,7 @@ class SessionManager {
 
             this.channels.set(channelId, {
                 status: 'RESTORING',
-                qrCode: null,
+                url_qrcode: null,
                 lastSeen: new Date()
             });
 
