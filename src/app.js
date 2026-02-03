@@ -5,21 +5,16 @@ import { logger } from './utils/logger.js';
 
 const app = express();
 
-// API Key para autenticação (definir via variável de ambiente ou usar padrão)
 const API_KEY = process.env.API_KEY || 'q3UydSOJTNCQXxF6MtyjGFRr';
 
-// Middleware para parsing JSON
 app.use(express.json({ limit: '50mb' }));
 
-// Middleware de autenticação por API Key
 app.use((req, res, next) => {
-    // Rotas públicas (não precisam de autenticação)
     const publicRoutes = ['/', '/health'];
     if (publicRoutes.includes(req.path)) {
         return next();
     }
 
-    // Verificar API Key no header
     const apiKey = req.headers['x-api-key'] || req.headers['authorization']?.replace('Bearer ', '');
 
     if (!apiKey) {
@@ -42,11 +37,9 @@ app.use((req, res, next) => {
     next();
 });
 
-// Middleware de logging de requests
 app.use((req, res, next) => {
     const start = Date.now();
 
-    // Override do método end para capturar o status code e tempo de resposta
     const originalEnd = res.end;
     res.end = function(...args) {
         const responseTime = Date.now() - start;
@@ -60,11 +53,9 @@ app.use((req, res, next) => {
     next();
 });
 
-// Rotas
 app.use('/channels', channelsRoutes);
 app.use('/messages', messagesRoutes);
 
-// Rota raiz - informações da API
 app.get('/', (req, res) => {
     res.json({
         success: true,
@@ -95,7 +86,6 @@ app.get('/', (req, res) => {
     });
 });
 
-// Rota de health check
 app.get('/health', (req, res) => {
     res.json({
         success: true,
@@ -109,7 +99,6 @@ app.get('/health', (req, res) => {
     });
 });
 
-// Middleware para rotas não encontradas
 app.use('*', (req, res) => {
     res.status(404).json({
         success: false,
@@ -118,14 +107,11 @@ app.use('*', (req, res) => {
     });
 });
 
-// Middleware de tratamento de erros global (deve ser o ÚLTIMO)
 app.use((err, req, res, next) => {
-    // Se já foi enviada uma resposta, delegar para o handler padrão do Express
     if (res.headersSent) {
         return next(err);
     }
 
-    // Tratar especificamente erros de JSON inválido
     if (err.type === 'entity.parse.failed') {
         return res.status(400).json({
             success: false,
@@ -134,7 +120,6 @@ app.use((err, req, res, next) => {
         });
     }
 
-    // Tratar outros erros de sintaxe
     if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
         return res.status(400).json({
             success: false,

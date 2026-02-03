@@ -5,7 +5,6 @@ class Logger {
     constructor() {
         this.logDir = path.join('logs');
 
-        // Criar diretório de logs se não existir
         if (!fs.existsSync(this.logDir)) {
             fs.mkdirSync(this.logDir, { recursive: true });
         }
@@ -44,7 +43,6 @@ class Logger {
     log(level, message, data = null) {
         const formattedMessage = this.formatMessage(level, message, data);
 
-        // Escrever no console
         if (level === 'error') {
             console.error(formattedMessage);
         } else if (level === 'warn') {
@@ -53,7 +51,6 @@ class Logger {
             console.log(formattedMessage);
         }
 
-        // Escrever no arquivo
         this.writeToFile(level, formattedMessage);
     }
 
@@ -70,19 +67,16 @@ class Logger {
     }
 
     debug(message, data = null) {
-        // Debug logs apenas em desenvolvimento
         if (process.env.NODE_ENV !== 'production') {
             this.log('debug', message, data);
         }
     }
 
-    // Logger específico para canais
     channelLog(channelId, level, message, data = null) {
         const channelMessage = `[CANAL:${channelId}] ${message}`;
         this.log(level, channelMessage, data);
     }
 
-    // Logger para requests HTTP
     httpLog(method, url, statusCode, responseTime, channelId = null) {
         const message = channelId
             ? `[CANAL:${channelId}] ${method} ${url} - ${statusCode} (${responseTime}ms)`
@@ -95,7 +89,6 @@ class Logger {
         }
     }
 
-    // Limpar logs antigos (manter apenas dos últimos 30 dias)
     cleanOldLogs() {
         try {
             const files = fs.readdirSync(this.logDir);
@@ -119,7 +112,6 @@ class Logger {
         }
     }
 
-    // Obter logs do dia atual
     getTodayLogs() {
         try {
             const today = new Date().toISOString().split('T')[0];
@@ -136,7 +128,6 @@ class Logger {
         }
     }
 
-    // Obter logs por canal
     getChannelLogs(channelId, maxLines = 100) {
         try {
             const todayLogs = this.getTodayLogs();
@@ -152,8 +143,6 @@ class Logger {
     }
 }
 
-// Instância singleton do logger
 export const logger = new Logger();
 
-// Limpar logs antigos na inicialização
 logger.cleanOldLogs();

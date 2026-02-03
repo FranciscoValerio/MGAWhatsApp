@@ -12,7 +12,6 @@ import path from 'path';
 import P from 'pino';
 import { logger } from '../utils/logger.js';
 
-// Logger do Baileys com nível reduzido
 const baileysLogger = P({
     level: 'warn',
     transport: {
@@ -25,10 +24,6 @@ const baileysLogger = P({
     }
 });
 
-/**
- * SessionManager - Gerenciador de sessões WhatsApp
- * Baseado na documentação oficial do Baileys
- */
 class SessionManager {
     constructor() {
         this.sessions = new Map(); // channelId -> { socket, saveCreds }
@@ -37,16 +32,12 @@ class SessionManager {
         this.connectingChannels = new Set();
     }
 
-    /**
-     * Criar um novo canal WhatsApp
-     */
     async createChannel(channelId) {
         try {
             if (this.channels.has(channelId)) {
                 throw new Error('Canal já existe');
             }
 
-            // Criar diretório do canal
             const channelPath = path.join('src', 'channels', channelId);
             if (!fs.existsSync(channelPath)) {
                 fs.mkdirSync(channelPath, { recursive: true });
@@ -60,7 +51,6 @@ class SessionManager {
 
             logger.info(`Canal ${channelId} criado`);
 
-            // Criar promise para aguardar QR Code
             let qrResolve, qrReject;
             const qrPromise = new Promise((resolve, reject) => {
                 qrResolve = resolve;
@@ -68,10 +58,8 @@ class SessionManager {
             });
             this.qrPromises.set(channelId, { resolve: qrResolve, reject: qrReject });
 
-            // Inicializar sessão
             await this.initializeSession(channelId, true);
 
-            // Aguardar QR Code com timeout
             try {
                 await Promise.race([
                     qrPromise,
@@ -97,19 +85,14 @@ class SessionManager {
         }
     }
 
-    /**
-     * Inicializar sessão WhatsApp usando a documentação oficial do Baileys
-     */
     async initializeSession(channelId, forceNew = false) {
         try {
-            // Evitar múltiplas inicializações simultâneas
             if (this.connectingChannels.has(channelId)) {
                 logger.info(`Canal ${channelId} já está sendo inicializado`);
                 return;
             }
             this.connectingChannels.add(channelId);
 
-            // Fechar sessão existente
             const existingSession = this.sessions.get(channelId);
             if (existingSession?.socket) {
                 try {
@@ -124,24 +107,20 @@ class SessionManager {
             const channelPath = path.join('src', 'channels', channelId);
             const authPath = path.join(channelPath, 'auth_info');
 
-            // Limpar auth se forceNew
             if (forceNew && fs.existsSync(authPath)) {
                 logger.info(`Limpando autenticação do canal ${channelId}`);
                 fs.rmSync(authPath, { recursive: true, force: true });
                 await new Promise(resolve => setTimeout(resolve, 500));
             }
 
-            // Usar useMultiFileAuthState conforme documentação
             const { state, saveCreds } = await useMultiFileAuthState(authPath);
 
             const hasValidAuth = state.creds?.me?.id;
             logger.info(`Inicializando ${channelId} - Auth existente: ${hasValidAuth ? 'Sim' : 'Não'}`);
 
-            // Obter versão mais recente do WhatsApp Web
             const { version } = await fetchLatestBaileysVersion();
             logger.info(`Usando WhatsApp Web versão: ${version.join('.')}`);
 
-            // Criar socket conforme documentação oficial
             const socket = makeWASocket({
                 version,
                 logger: baileysLogger,
@@ -161,14 +140,12 @@ class SessionManager {
                 generateHighQualityLinkPreview: false
             });
 
-            // Processar eventos conforme documentação
             socket.ev.on('connection.update', async (update) => {
                 await this.handleConnectionUpdate(channelId, update);
             });
 
             socket.ev.on('creds.update', saveCreds);
 
-            // Processar mensagens recebidas
             socket.ev.on('messages.upsert', ({ messages }) => {
                 for (const msg of messages) {
                     if (!msg.key.fromMe) {
@@ -177,7 +154,6 @@ class SessionManager {
                 }
             });
 
-            // Salvar sessão
             this.sessions.set(channelId, { socket, saveCreds });
             logger.info(`Sessão inicializada para canal ${channelId}`);
 
@@ -189,19 +165,14 @@ class SessionManager {
         }
     }
 
-    /**
-     * Tratar atualizações de conexão
-     */
     async handleConnectionUpdate(channelId, update) {
         const { connection, lastDisconnect, qr } = update;
 
-        // QR Code recebido
         if (qr) {
             logger.info(`QR Code gerado para canal ${channelId}`);
             await this.handleQRCode(channelId, qr);
         }
 
-        // Conexão fechada
         if (connection === 'close') {
             const statusCode = lastDisconnect?.error?.output?.statusCode;
             const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
@@ -244,7 +215,6 @@ class SessionManager {
             }
         }
 
-        // Conexão aberta
         if (connection === 'open') {
             logger.info(`✅ Canal ${channelId} conectado com sucesso!`);
             this.channels.set(channelId, {
@@ -256,7 +226,6 @@ class SessionManager {
             });
         }
 
-        // Conectando
         if (connection === 'connecting') {
             this.channels.set(channelId, {
                 ...this.channels.get(channelId),
@@ -266,9 +235,6 @@ class SessionManager {
         }
     }
 
-    /**
-     * Processar QR Code
-     */
     async handleQRCode(channelId, qr) {
         try {
             const qrCodeDataURL = await QRCode.toDataURL(qr);
@@ -280,7 +246,6 @@ class SessionManager {
             });
             logger.info(`✅ QR Code pronto para canal ${channelId}`);
 
-            // Resolver promise de QR
             const qrPromise = this.qrPromises.get(channelId);
             if (qrPromise) {
                 qrPromise.resolve();
@@ -294,9 +259,6 @@ class SessionManager {
         }
     }
 
-    /**
-     * Obter status de um canal
-     */
     getChannelStatus(channelId) {
         if (!this.channels.has(channelId)) {
             return null;
@@ -307,24 +269,15 @@ class SessionManager {
         };
     }
 
-    /**
-     * Obter socket de um canal
-     */
     getSocket(channelId) {
         return this.sessions.get(channelId)?.socket || null;
     }
 
-    /**
-     * Verificar se canal está conectado
-     */
     isChannelConnected(channelId) {
         const channel = this.channels.get(channelId);
         return channel?.status === 'CONNECTED';
     }
 
-    /**
-     * Listar todos os canais
-     */
     getAllChannels() {
         const channels = [];
         for (const [channelId, data] of this.channels.entries()) {
@@ -333,9 +286,6 @@ class SessionManager {
         return channels;
     }
 
-    /**
-     * Fechar/desconectar canal
-     */
     async closeChannel(channelId) {
         try {
             const session = this.sessions.get(channelId);
@@ -350,9 +300,6 @@ class SessionManager {
         }
     }
 
-    /**
-     * Regenerar QR Code de um canal
-     */
     async regenerateQRCode(channelId) {
         try {
             logger.info(`Regenerando QR Code para canal ${channelId}`);
@@ -381,9 +328,6 @@ class SessionManager {
         }
     }
 
-    /**
-     * Testar conexão de um canal
-     */
     async testConnection(channelId) {
         try {
             const socket = this.getSocket(channelId);
@@ -401,32 +345,24 @@ class SessionManager {
         }
     }
 
-    /**
-     * Restaurar sessão existente (usado ao reiniciar o servidor)
-     * NÃO força novo QR Code, usa credenciais existentes
-     */
     async restoreSession(channelId) {
         try {
-            // Verificar se já está conectado
             if (this.channels.has(channelId) && this.isChannelConnected(channelId)) {
                 logger.info(`Canal ${channelId} já está conectado`);
                 return;
             }
 
-            // Criar diretório se não existir
             const channelPath = path.join('src', 'channels', channelId);
             if (!fs.existsSync(channelPath)) {
                 throw new Error('Canal não encontrado');
             }
 
-            // Registrar canal como "restaurando"
             this.channels.set(channelId, {
                 status: 'RESTORING',
                 qrCode: null,
                 lastSeen: new Date()
             });
 
-            // Inicializar sessão SEM forçar novo QR (forceNew = false)
             await this.initializeSession(channelId, false);
 
             return {

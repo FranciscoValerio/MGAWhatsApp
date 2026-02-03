@@ -4,11 +4,9 @@ import sessionManager from './sessions/manager.js';
 import fs from 'fs';
 import path from 'path';
 
-// Configurações do servidor
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '0.0.0.0'; // 0.0.0.0 para funcionar em cloud (Render, Railway, etc)
 
-// Função para criar diretórios necessários
 function createRequiredDirectories() {
     const directories = [
         path.join('src', 'channels'),
@@ -23,7 +21,6 @@ function createRequiredDirectories() {
     });
 }
 
-// Função para restaurar sessões existentes ao iniciar o servidor
 async function restoreExistingSessions() {
     const channelsDir = path.join('src', 'channels');
 
@@ -45,7 +42,6 @@ async function restoreExistingSessions() {
     for (const channelId of channels) {
         const authPath = path.join(channelsDir, channelId, 'auth_info');
 
-        // Verificar se tem credenciais salvas
         if (fs.existsSync(authPath) && fs.readdirSync(authPath).length > 0) {
             try {
                 logger.info(`🔄 Restaurando sessão: ${channelId}`);
@@ -58,7 +54,6 @@ async function restoreExistingSessions() {
     }
 }
 
-// Função para lidar com shutdown graceful
 function setupGracefulShutdown(server) {
     const shutdown = (signal) => {
         logger.info(`Recebido sinal ${signal}, iniciando shutdown graceful...`);
@@ -73,7 +68,6 @@ function setupGracefulShutdown(server) {
             process.exit(0);
         });
 
-        // Force close server after 10 seconds
         setTimeout(() => {
             logger.error('Forçando fechamento do servidor após timeout');
             process.exit(1);
@@ -84,7 +78,6 @@ function setupGracefulShutdown(server) {
     process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
-// Tratar erros não capturados
 process.on('uncaughtException', (error) => {
     logger.error('Exceção não capturada:', error);
     process.exit(1);
@@ -96,7 +89,6 @@ process.on('unhandledRejection', (reason, promise) => {
         stack: reason?.stack,
         promise: promise?.constructor?.name || 'Promise'
     });
-    // Não vamos encerrar o servidor, apenas logar o erro
     logger.warn('Servidor continuará executando, mas verifique o erro acima');
 });
 
@@ -105,21 +97,16 @@ process.on('uncaughtException', (error) => {
         message: error.message,
         stack: error.stack
     });
-    // Para exceções não capturadas, é mais seguro encerrar o processo
     logger.error('Encerrando processo devido a exceção não capturada');
     process.exit(1);
 });
 
-// Inicializar servidor
 async function startServer() {
     try {
-        // Criar diretórios necessários
         createRequiredDirectories();
 
-        // Restaurar sessões existentes ao iniciar
         await restoreExistingSessions();
 
-        // Iniciar servidor
         const server = app.listen(PORT, HOST, () => {
             logger.info(`🚀 Servidor MGA WhatsApp API iniciado`);
             logger.info(`📡 Servidor rodando em http://${HOST}:${PORT}`);
@@ -139,10 +126,8 @@ async function startServer() {
             logger.info('✅ API pronta para receber requisições!');
         });
 
-        // Configurar shutdown graceful
         setupGracefulShutdown(server);
 
-        // Aumentar timeout do servidor para uploads grandes
         server.timeout = 300000; // 5 minutos
         server.keepAliveTimeout = 65000; // 65 segundos
         server.headersTimeout = 66000; // 66 segundos
@@ -154,7 +139,6 @@ async function startServer() {
     }
 }
 
-// Verificar versão do Node.js
 const nodeVersion = process.version;
 const majorVersion = parseInt(nodeVersion.slice(1).split('.')[0]);
 
@@ -163,5 +147,4 @@ if (majorVersion < 18) {
     process.exit(1);
 }
 
-// Iniciar servidor
 startServer();

@@ -3,23 +3,14 @@ import axios from 'axios';
 import path from 'path';
 import { logger } from '../utils/logger.js';
 
-/**
- * WhatsAppService - Serviço para envio de mensagens
- * Baseado na documentação oficial do Baileys
- */
 class WhatsAppService {
     constructor() {
         this.lastMessageTime = new Map();
         this.MIN_DELAY_MS = 1000; // Delay mínimo entre mensagens
     }
 
-    /**
-     * Enviar mensagem de texto
-     * Conforme documentação: sock.sendMessage(jid, { text: 'hello word' })
-     */
     async sendTextMessage(channelId, to, message) {
         try {
-            // Verificar conexão
             if (!sessionManager.isChannelConnected(channelId)) {
                 throw new Error('CHANNEL_NOT_CONNECTED');
             }
@@ -29,7 +20,6 @@ class WhatsAppService {
                 throw new Error('CHANNEL_NOT_CONNECTED');
             }
 
-            // Verificar se socket está realmente conectado
             if (!socket.user) {
                 logger.error(`Socket sem usuário autenticado para canal ${channelId}`);
                 throw new Error('CHANNEL_NOT_CONNECTED');
@@ -37,14 +27,11 @@ class WhatsAppService {
 
             logger.info(`[${channelId}] Usuário conectado: ${socket.user.id}`);
 
-            // Aplicar delay entre mensagens
             await this.applyMessageDelay(channelId);
 
-            // Formatar número conforme documentação: [country code][phone number]@s.whatsapp.net
             const formattedNumber = this.formatWhatsAppNumber(to);
             logger.info(`[${channelId}] Número formatado: ${to} -> ${formattedNumber}`);
 
-            // Verificar se número existe no WhatsApp
             try {
                 const [exists] = await socket.onWhatsApp(formattedNumber);
                 logger.info(`[${channelId}] Verificação onWhatsApp:`, exists);
@@ -53,11 +40,9 @@ class WhatsAppService {
                     throw new Error('INVALID_WHATSAPP_NUMBER');
                 }
 
-                // Usar o JID retornado pelo onWhatsApp (mais confiável)
                 const jid = exists.jid;
                 logger.info(`[${channelId}] JID confirmado: ${jid}`);
 
-                // Enviar mensagem usando o JID confirmado
                 logger.info(`[${channelId}] Enviando mensagem para ${jid}...`);
                 const result = await socket.sendMessage(jid, { text: message });
 
@@ -92,10 +77,6 @@ class WhatsAppService {
         }
     }
 
-    /**
-     * Enviar documento/arquivo
-     * Conforme documentação: sock.sendMessage(jid, { document: buffer, mimetype: '...', fileName: '...' })
-     */
     async sendDocument(channelId, to, fileUrl, fileName, caption = '') {
         try {
             if (!sessionManager.isChannelConnected(channelId)) {
@@ -109,17 +90,14 @@ class WhatsAppService {
 
             await this.applyMessageDelay(channelId);
 
-            // Download do arquivo
             const fileBuffer = await this.downloadFile(fileUrl);
             const formattedNumber = this.formatWhatsAppNumber(to);
 
-            // Determinar tipo de mídia
             const fileExtension = path.extname(fileName).toLowerCase();
             const mimeType = this.getMimeType(fileExtension);
 
             let messageContent;
 
-            // Conforme documentação, imagens usam formato diferente
             if (this.isImageType(fileExtension)) {
                 messageContent = {
                     image: fileBuffer,
@@ -136,7 +114,6 @@ class WhatsAppService {
                     mimetype: mimeType
                 };
             } else {
-                // Documento genérico
                 messageContent = {
                     document: fileBuffer,
                     mimetype: mimeType,
@@ -168,10 +145,6 @@ class WhatsAppService {
         }
     }
 
-    /**
-     * Enviar imagem
-     * Conforme documentação: sock.sendMessage(jid, { image: { url: '...' }, caption: '...' })
-     */
     async sendImage(channelId, to, imageUrl, caption = '') {
         try {
             if (!sessionManager.isChannelConnected(channelId)) {
@@ -186,14 +159,12 @@ class WhatsAppService {
             await this.applyMessageDelay(channelId);
             const formattedNumber = this.formatWhatsAppNumber(to);
 
-            // Verificar número
             const [exists] = await socket.onWhatsApp(formattedNumber);
             if (!exists?.exists) {
                 throw new Error('INVALID_WHATSAPP_NUMBER');
             }
             const jid = exists.jid;
 
-            // Pode usar URL diretamente conforme documentação
             const result = await socket.sendMessage(jid, {
                 image: { url: imageUrl },
                 caption: caption
@@ -215,9 +186,6 @@ class WhatsAppService {
         }
     }
 
-    /**
-     * Enviar imagem via Base64
-     */
     async sendImageBase64(channelId, to, base64Data, caption = '') {
         try {
             if (!sessionManager.isChannelConnected(channelId)) {
@@ -232,14 +200,12 @@ class WhatsAppService {
             await this.applyMessageDelay(channelId);
             const formattedNumber = this.formatWhatsAppNumber(to);
 
-            // Verificar número
             const [exists] = await socket.onWhatsApp(formattedNumber);
             if (!exists?.exists) {
                 throw new Error('INVALID_WHATSAPP_NUMBER');
             }
             const jid = exists.jid;
 
-            // Converter base64 para Buffer
             const imageBuffer = this.base64ToBuffer(base64Data);
 
             const result = await socket.sendMessage(jid, {
@@ -262,9 +228,6 @@ class WhatsAppService {
         }
     }
 
-    /**
-     * Enviar documento/arquivo via Base64
-     */
     async sendDocumentBase64(channelId, to, base64Data, fileName, mimetype, caption = '') {
         try {
             if (!sessionManager.isChannelConnected(channelId)) {
@@ -279,17 +242,14 @@ class WhatsAppService {
             await this.applyMessageDelay(channelId);
             const formattedNumber = this.formatWhatsAppNumber(to);
 
-            // Verificar número
             const [exists] = await socket.onWhatsApp(formattedNumber);
             if (!exists?.exists) {
                 throw new Error('INVALID_WHATSAPP_NUMBER');
             }
             const jid = exists.jid;
 
-            // Converter base64 para Buffer
             const fileBuffer = this.base64ToBuffer(base64Data);
 
-            // Determinar tipo de arquivo pela extensão
             const fileExtension = path.extname(fileName).toLowerCase();
             const mimeType = mimetype || this.getMimeType(fileExtension);
 
@@ -311,7 +271,6 @@ class WhatsAppService {
                     mimetype: mimeType
                 };
             } else {
-                // Documento genérico (PDF, DOC, etc)
                 messageContent = {
                     document: fileBuffer,
                     mimetype: mimeType,
@@ -338,20 +297,11 @@ class WhatsAppService {
         }
     }
 
-    /**
-     * Converter Base64 para Buffer
-     * Aceita com ou sem prefixo data:...;base64,
-     */
     base64ToBuffer(base64String) {
-        // Remover prefixo data:image/png;base64, ou similar se existir
         const base64Data = base64String.replace(/^data:[^;]+;base64,/, '');
         return Buffer.from(base64Data, 'base64');
     }
 
-    /**
-     * Verificar se número existe no WhatsApp
-     * Conforme documentação: sock.onWhatsApp(jid)
-     */
     async checkNumber(channelId, number) {
         try {
             if (!sessionManager.isChannelConnected(channelId)) {
@@ -376,9 +326,6 @@ class WhatsAppService {
         }
     }
 
-    /**
-     * Download de arquivo por URL
-     */
     async downloadFile(url) {
         try {
             const response = await axios({
@@ -394,29 +341,18 @@ class WhatsAppService {
         }
     }
 
-    /**
-     * Formatar número para WhatsApp
-     * Conforme documentação: [country code][phone number]@s.whatsapp.net
-     * Exemplo: 5511999999999@s.whatsapp.net
-     */
     formatWhatsAppNumber(number) {
-        // Remove caracteres não numéricos
         let cleanNumber = number.replace(/\D/g, '');
 
-        // Se não começar com código do país, assume Brasil (55)
         if (!cleanNumber.startsWith('55')) {
             cleanNumber = '55' + cleanNumber;
         }
 
-        // Log para debug
         logger.debug(`Formatando número: ${number} -> ${cleanNumber}@s.whatsapp.net`);
 
         return cleanNumber + '@s.whatsapp.net';
     }
 
-    /**
-     * Obter MIME type por extensão
-     */
     getMimeType(extension) {
         const mimeTypes = {
             '.pdf': 'application/pdf',
@@ -451,9 +387,6 @@ class WhatsAppService {
         return ['.mp3', '.ogg', '.wav', '.m4a'].includes(extension);
     }
 
-    /**
-     * Aplicar delay entre mensagens para evitar bloqueio
-     */
     async applyMessageDelay(channelId) {
         const lastTime = this.lastMessageTime.get(channelId);
         if (lastTime) {
@@ -465,9 +398,6 @@ class WhatsAppService {
         }
     }
 
-    /**
-     * Validar formato de número
-     */
     isValidWhatsAppNumber(number) {
         const cleanNumber = number.replace(/\D/g, '');
         return cleanNumber.length >= 10 && cleanNumber.length <= 15;
