@@ -25,10 +25,13 @@ const baileysLogger = P({
 
 class SessionManager {
     constructor() {
-        this.sessions = new Map(); // channelId -> { socket, saveCreds }
-        this.channels = new Map(); // channelId -> { status, url_qrcode, lastSeen }
+        this.sessions = new Map();
+        this.channels = new Map();
+        this.messageStores = new Map();
         this.qrPromises = new Map();
         this.connectingChannels = new Set();
+        this.repairingChannels = new Set();
+        this.reconnectTimers = new Map();
     }
 
     async createChannel(channelId) {
@@ -80,6 +83,8 @@ class SessionManager {
         } catch (error) {
             logger.error(`Erro ao criar canal ${channelId}:`, error.message);
             this.qrPromises.delete(channelId);
+            this.channels.delete(channelId);
+            this.sessions.delete(channelId);
             throw error;
         }
     }
@@ -120,6 +125,15 @@ class SessionManager {
             const { version } = await fetchLatestBaileysVersion();
             logger.info(`Usando WhatsApp Web versão: ${version.join('.')}`);
 
+            let msgStore = this.messageStores.get(channelId);
+            if (!msgStore) {
+                msgStore = new Map();
+                this.messageStores.set(channelId, msgStore);
+            }
+
+            const msgRetryCounterCache = new Map();
+            const userDevicesCache = new Map();
+
             const socket = makeWASocket({
                 version,
                 logger: baileysLogger,
@@ -129,14 +143,25 @@ class SessionManager {
                 },
                 browser: Browsers.ubuntu('MGA WhatsApp API'),
                 printQRInTerminal: false,
-                // Configurações recomendadas pela documentação
-                markOnlineOnConnect: false, // Receber notificações no app
+                markOnlineOnConnect: true,
                 syncFullHistory: false,
                 defaultQueryTimeoutMs: 60_000,
                 keepAliveIntervalMs: 25_000,
                 connectTimeoutMs: 60_000,
                 qrTimeout: 40_000,
-                generateHighQualityLinkPreview: false
+                retryRequestDelayMs: 250,
+                generateHighQualityLinkPreview: false,
+                msgRetryCounterCache,
+                userDevicesCache,
+                getMessage: async (key) => {
+                    const stored = msgStore.get(key.id);
+                    if (stored?.message) {
+                        logger.info(`[${channelId}] getMessage: encontrada mensagem ${key.id}`);
+                        return stored.message;
+                    }
+                    logger.warn(`[${channelId}] getMessage: mensagem ${key.id} NÃO encontrada no store (${msgStore.size} msgs armazenadas)`);
+                    return { conversation: '' };
+                }
             });
 
             socket.ev.on('connection.update', async (update) => {
@@ -145,10 +170,26 @@ class SessionManager {
 
             socket.ev.on('creds.update', saveCreds);
 
-            socket.ev.on('messages.upsert', ({ messages }) => {
+            socket.ev.on('messages.upsert', ({ messages, type }) => {
                 for (const msg of messages) {
-                    if (!msg.key.fromMe) {
+                    msgStore.set(msg.key.id, msg);
+                    if (msg.key.fromMe) {
+                        logger.info(`[${channelId}] Mensagem enviada armazenada no store: ${msg.key.id} (type: ${type})`);
+                    } else {
                         logger.debug(`[${channelId}] Mensagem recebida de ${msg.key.remoteJid}`);
+                    }
+                }
+            });
+
+            socket.ev.on('messages.update', (updates) => {
+                for (const { key, update } of updates) {
+                    logger.info(`[${channelId}] Status atualizado: ${key.id} -> status: ${update.status}`);
+
+                    if (update.status === 0 || update.status === 'ERROR') {
+                        logger.warn(`[${channelId}] Mensagem ${key.id} com erro de entrega - possível sessão corrompida`);
+                        this.repairSession(channelId).catch(err =>
+                            logger.error(`[${channelId}] Falha no reparo automático: ${err.message}`)
+                        );
                     }
                 }
             });
@@ -174,9 +215,23 @@ class SessionManager {
 
         if (connection === 'close') {
             const statusCode = lastDisconnect?.error?.output?.statusCode;
+            const errorMessage = lastDisconnect?.error?.message || '';
             const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
-            logger.info(`[${channelId}] Conexão fechada. Status: ${statusCode}, Reconectar: ${shouldReconnect}`);
+            logger.info(`[${channelId}] Conexão fechada. Status: ${statusCode}, Msg: ${errorMessage}, Reconectar: ${shouldReconnect}`);
+
+            const isCryptoError = errorMessage.includes('Bad MAC')
+                || errorMessage.includes('decryption')
+                || errorMessage.includes('hmac')
+                || statusCode === DisconnectReason.badSession;
+
+            if (isCryptoError) {
+                logger.warn(`[${channelId}] Erro de criptografia detectado, iniciando reparo automático...`);
+                this.repairSession(channelId).catch(err =>
+                    logger.error(`[${channelId}] Falha no reparo por erro cripto: ${err.message}`)
+                );
+                return;
+            }
 
             if (shouldReconnect) {
                 const channel = this.channels.get(channelId);
@@ -191,10 +246,15 @@ class SessionManager {
                     });
 
                     const delay = Math.min(3000 * Math.pow(2, attempts - 1), 60000);
-                    setTimeout(() => {
+                    const timer = setTimeout(() => {
+                        this.reconnectTimers.delete(channelId);
+                        if (!this.channels.has(channelId)) {
+                            return;
+                        }
                         this.sessions.delete(channelId);
                         this.initializeSession(channelId);
                     }, delay);
+                    this.reconnectTimers.set(channelId, timer);
                 } else {
                     logger.error(`Canal ${channelId} atingiu limite de reconexões`);
                     this.channels.set(channelId, {
@@ -223,6 +283,16 @@ class SessionManager {
                 lastSeen: new Date(),
                 reconnectAttempts: 0
             });
+
+            const socket = this.getSocket(channelId);
+            if (socket) {
+                try {
+                    await socket.sendPresenceUpdate('available');
+                    logger.info(`[${channelId}] Presença 'available' enviada`);
+                } catch (err) {
+                    logger.warn(`[${channelId}] Erro ao enviar presença: ${err.message}`);
+                }
+            }
         }
 
         if (connection === 'connecting') {
@@ -263,6 +333,13 @@ class SessionManager {
         return this.sessions.get(channelId)?.socket || null;
     }
 
+    storeMessage(channelId, msg) {
+        const store = this.messageStores.get(channelId);
+        if (store && msg?.key?.id) {
+            store.set(msg.key.id, msg);
+        }
+    }
+
     isChannelConnected(channelId) {
         const channel = this.channels.get(channelId);
         return channel?.status === 'CONNECTED';
@@ -277,16 +354,46 @@ class SessionManager {
     }
 
     async closeChannel(channelId) {
+        const timer = this.reconnectTimers.get(channelId);
+        if (timer) {
+            clearTimeout(timer);
+            this.reconnectTimers.delete(channelId);
+        }
+
         try {
             const session = this.sessions.get(channelId);
             if (session?.socket) {
-                await session.socket.logout();
+                try {
+                    await Promise.race([
+                        session.socket.logout(),
+                        new Promise((_, reject) =>
+                            setTimeout(() => reject(new Error('Timeout ao fazer logout')), 8000)
+                        )
+                    ]);
+                } catch (logoutError) {
+                    logger.warn(`Logout falhou/expirou para ${channelId}, forçando fechamento: ${logoutError.message}`);
+                    try {
+                        session.socket.end(new Error('Fechamento forçado'));
+                    } catch (endError) {
+                        logger.debug(`Erro ao forçar fechamento do socket ${channelId}: ${endError.message}`);
+                    }
+                }
             }
+        } finally {
             this.sessions.delete(channelId);
             this.channels.delete(channelId);
+            this.messageStores.delete(channelId);
+
+            try {
+                const authPath = path.join('src', 'channels', channelId, 'auth_info');
+                if (fs.existsSync(authPath)) {
+                    fs.rmSync(authPath, { recursive: true, force: true });
+                }
+            } catch (fsError) {
+                logger.warn(`Erro ao remover auth_info do canal ${channelId}: ${fsError.message}`);
+            }
+
             logger.info(`Canal ${channelId} fechado`);
-        } catch (error) {
-            logger.error(`Erro ao fechar canal ${channelId}:`, error);
         }
     }
 
@@ -332,6 +439,58 @@ class SessionManager {
             return { healthy: true, reason: 'Conexão OK' };
         } catch (error) {
             return { healthy: false, reason: error.message };
+        }
+    }
+
+    async repairSession(channelId) {
+        if (this.repairingChannels.has(channelId)) {
+            return;
+        }
+
+        try {
+            this.repairingChannels.add(channelId);
+            logger.info(`[${channelId}] Iniciando reparo de sessão (limpeza de chaves cripto)...`);
+
+            const authPath = path.join('src', 'channels', channelId, 'auth_info');
+            if (!fs.existsSync(authPath)) {
+                logger.warn(`[${channelId}] Pasta auth_info não encontrada, cancelando reparo`);
+                return;
+            }
+
+            const session = this.sessions.get(channelId);
+            if (session?.socket) {
+                try {
+                    await session.socket.end();
+                } catch (err) {
+                    logger.debug(`[${channelId}] Erro ao fechar socket para reparo: ${err.message}`);
+                }
+            }
+            this.sessions.delete(channelId);
+
+            const files = fs.readdirSync(authPath);
+            let cleaned = 0;
+            for (const file of files) {
+                if (file.startsWith('sender-key-') || file.startsWith('session-') || file.startsWith('pre-key-')) {
+                    fs.unlinkSync(path.join(authPath, file));
+                    cleaned++;
+                }
+            }
+            logger.info(`[${channelId}] ${cleaned} arquivo(s) de chaves cripto removidos (auth principal mantida)`);
+
+            await new Promise(resolve => setTimeout(resolve, 1000));
+
+            this.channels.set(channelId, {
+                ...this.channels.get(channelId),
+                status: 'REPAIRING',
+                lastSeen: new Date()
+            });
+
+            await this.initializeSession(channelId, false);
+            logger.info(`[${channelId}] Reparo de sessão concluído`);
+        } catch (error) {
+            logger.error(`[${channelId}] Erro no reparo de sessão: ${error.message}`);
+        } finally {
+            this.repairingChannels.delete(channelId);
         }
     }
 

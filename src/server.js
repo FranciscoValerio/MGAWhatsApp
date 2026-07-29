@@ -5,7 +5,7 @@ import fs from 'fs';
 import path from 'path';
 
 const PORT = process.env.PORT || 3000;
-const HOST = process.env.HOST || '0.0.0.0'; // 0.0.0.0 para funcionar em cloud (Render, Railway, etc)
+const HOST = process.env.HOST || '127.0.0.1'; // 0.0.0.0 para funcionar em cloud (Render, Railway, etc)
 
 function createRequiredDirectories() {
     const directories = [

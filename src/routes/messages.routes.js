@@ -273,6 +273,13 @@ router.post('/image-base64', async (req, res) => {
         });
     } catch (error) {
         logger.error('Erro ao enviar imagem base64:', error);
+        if (error.message === 'EMPTY_FILE') {
+            return res.status(400).json({
+                success: false,
+                error: 'EMPTY_FILE',
+                message: 'O conteúdo base64 está vazio ou inválido'
+            });
+        }
         res.status(500).json({
             success: false,
             error: 'INTERNAL_ERROR',
@@ -331,6 +338,13 @@ router.post('/document-base64', async (req, res) => {
         });
     } catch (error) {
         logger.error('Erro ao enviar documento base64:', error);
+        if (error.message === 'EMPTY_FILE') {
+            return res.status(400).json({
+                success: false,
+                error: 'EMPTY_FILE',
+                message: 'O conteúdo base64 está vazio ou inválido'
+            });
+        }
         res.status(500).json({
             success: false,
             error: 'INTERNAL_ERROR',

@@ -45,6 +45,7 @@ class WhatsAppService {
 
                 logger.info(`[${channelId}] Enviando mensagem para ${jid}...`);
                 const result = await socket.sendMessage(jid, { text: message });
+                sessionManager.storeMessage(channelId, result);
 
                 logger.info(`[${channelId}] Resultado do envio:`, {
                     messageId: result?.key?.id,
@@ -123,6 +124,7 @@ class WhatsAppService {
             }
 
             const result = await socket.sendMessage(formattedNumber, messageContent);
+            sessionManager.storeMessage(channelId, result);
 
             this.lastMessageTime.set(channelId, Date.now());
             logger.info(`Arquivo ${fileName} enviado para ${to} via canal ${channelId}`);
@@ -169,6 +171,7 @@ class WhatsAppService {
                 image: { url: imageUrl },
                 caption: caption
             });
+            sessionManager.storeMessage(channelId, result);
 
             this.lastMessageTime.set(channelId, Date.now());
             logger.info(`Imagem enviada para ${to} via canal ${channelId}`);
@@ -212,6 +215,7 @@ class WhatsAppService {
                 image: imageBuffer,
                 caption: caption
             });
+            sessionManager.storeMessage(channelId, result);
 
             this.lastMessageTime.set(channelId, Date.now());
             logger.info(`Imagem (base64) enviada para ${to} via canal ${channelId}`);
@@ -280,6 +284,7 @@ class WhatsAppService {
             }
 
             const result = await socket.sendMessage(jid, messageContent);
+            sessionManager.storeMessage(channelId, result);
 
             this.lastMessageTime.set(channelId, Date.now());
             logger.info(`Documento ${fileName} (base64) enviado para ${to} via canal ${channelId}`);
@@ -299,7 +304,11 @@ class WhatsAppService {
 
     base64ToBuffer(base64String) {
         const base64Data = base64String.replace(/^data:[^;]+;base64,/, '');
-        return Buffer.from(base64Data, 'base64');
+        const buffer = Buffer.from(base64Data, 'base64');
+        if (buffer.length === 0) {
+            throw new Error('EMPTY_FILE');
+        }
+        return buffer;
     }
 
     async checkNumber(channelId, number) {
