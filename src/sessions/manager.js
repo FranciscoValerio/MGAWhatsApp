@@ -23,6 +23,14 @@ const baileysLogger = P({
     }
 });
 
+function withTimeout(promise, ms, label) {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Timeout (${ms}ms) em ${label}`)), ms);
+    });
+    return Promise.race([Promise.resolve(promise), timeout]).finally(() => clearTimeout(timer));
+}
+
 class SessionManager {
     constructor() {
         this.sessions = new Map();
@@ -38,6 +46,12 @@ class SessionManager {
         try {
             if (this.channels.has(channelId)) {
                 throw new Error('Canal já existe');
+            }
+
+            if (this.connectingChannels.has(channelId) || this.repairingChannels.has(channelId)) {
+                logger.warn(`Canal ${channelId} tinha trava residual (connectingChannels/repairingChannels) antes da criação - limpando`);
+                this.connectingChannels.delete(channelId);
+                this.repairingChannels.delete(channelId);
             }
 
             const channelPath = path.join('src', 'channels', channelId);
@@ -100,10 +114,15 @@ class SessionManager {
             const existingSession = this.sessions.get(channelId);
             if (existingSession?.socket) {
                 try {
-                    await existingSession.socket.end();
+                    existingSession.socket.ev.removeAllListeners();
+                } catch (error) {
+                    logger.debug(`Erro ao remover listeners da sessão anterior: ${error.message}`);
+                }
+                try {
+                    await withTimeout(existingSession.socket.end(), 5000, `end() sessão anterior ${channelId}`);
                     await new Promise(resolve => setTimeout(resolve, 1000));
                 } catch (error) {
-                    logger.debug(`Erro ao fechar sessão anterior: ${error.message}`);
+                    logger.debug(`Erro/timeout ao fechar sessão anterior: ${error.message}`);
                 }
             }
             this.sessions.delete(channelId);
@@ -117,12 +136,12 @@ class SessionManager {
                 await new Promise(resolve => setTimeout(resolve, 500));
             }
 
-            const { state, saveCreds } = await useMultiFileAuthState(authPath);
+            const { state, saveCreds } = await withTimeout(useMultiFileAuthState(authPath), 8000, `useMultiFileAuthState ${channelId}`);
 
             const hasValidAuth = state.creds?.me?.id;
             logger.info(`Inicializando ${channelId} - Auth existente: ${hasValidAuth ? 'Sim' : 'Não'}`);
 
-            const { version } = await fetchLatestBaileysVersion();
+            const { version } = await withTimeout(fetchLatestBaileysVersion(), 10000, `fetchLatestBaileysVersion ${channelId}`);
             logger.info(`Usando WhatsApp Web versão: ${version.join('.')}`);
 
             let msgStore = this.messageStores.get(channelId);
@@ -246,13 +265,26 @@ class SessionManager {
                     });
 
                     const delay = Math.min(3000 * Math.pow(2, attempts - 1), 60000);
+                    const existingTimer = this.reconnectTimers.get(channelId);
+                    if (existingTimer) {
+                        clearTimeout(existingTimer);
+                    }
                     const timer = setTimeout(() => {
                         this.reconnectTimers.delete(channelId);
                         if (!this.channels.has(channelId)) {
                             return;
                         }
-                        this.sessions.delete(channelId);
-                        this.initializeSession(channelId);
+                        this.initializeSession(channelId).catch(err => {
+                            logger.error(`[${channelId}] Falha ao reconectar automaticamente: ${err.message}`);
+                            const current = this.channels.get(channelId);
+                            if (current) {
+                                this.channels.set(channelId, {
+                                    ...current,
+                                    status: 'FAILED',
+                                    lastSeen: new Date()
+                                });
+                            }
+                        });
                     }, delay);
                     this.reconnectTimers.set(channelId, timer);
                 } else {
@@ -364,6 +396,11 @@ class SessionManager {
             const session = this.sessions.get(channelId);
             if (session?.socket) {
                 try {
+                    session.socket.ev.removeAllListeners();
+                } catch (listenerError) {
+                    logger.debug(`Erro ao remover listeners do socket ${channelId}: ${listenerError.message}`);
+                }
+                try {
                     await Promise.race([
                         session.socket.logout(),
                         new Promise((_, reject) =>
@@ -383,6 +420,18 @@ class SessionManager {
             this.sessions.delete(channelId);
             this.channels.delete(channelId);
             this.messageStores.delete(channelId);
+            this.connectingChannels.delete(channelId);
+            this.repairingChannels.delete(channelId);
+
+            const qrPromise = this.qrPromises.get(channelId);
+            if (qrPromise) {
+                try {
+                    qrPromise.reject(new Error('Canal removido'));
+                } catch (_) {
+                    // promise já resolvida/rejeitada anteriormente
+                }
+            }
+            this.qrPromises.delete(channelId);
 
             try {
                 const authPath = path.join('src', 'channels', channelId, 'auth_info');
@@ -397,6 +446,55 @@ class SessionManager {
         }
     }
 
+    hasAnyTrace(channelId) {
+        return this.channels.has(channelId)
+            || this.sessions.has(channelId)
+            || this.connectingChannels.has(channelId)
+            || this.repairingChannels.has(channelId)
+            || this.reconnectTimers.has(channelId)
+            || this.qrPromises.has(channelId);
+    }
+
+    async forceCleanup(channelId) {
+        const timer = this.reconnectTimers.get(channelId);
+        if (timer) {
+            clearTimeout(timer);
+            this.reconnectTimers.delete(channelId);
+        }
+
+        const session = this.sessions.get(channelId);
+        if (session?.socket) {
+            try {
+                session.socket.ev.removeAllListeners();
+            } catch (err) {
+                logger.debug(`[${channelId}] Erro ao remover listeners no forceCleanup: ${err.message}`);
+            }
+            try {
+                await withTimeout(session.socket.end(new Error('forceCleanup')), 3000, `end() forceCleanup ${channelId}`);
+            } catch (err) {
+                logger.debug(`[${channelId}] Erro/timeout ao encerrar socket no forceCleanup: ${err.message}`);
+            }
+        }
+
+        this.sessions.delete(channelId);
+        this.channels.delete(channelId);
+        this.messageStores.delete(channelId);
+        this.connectingChannels.delete(channelId);
+        this.repairingChannels.delete(channelId);
+
+        const qrPromise = this.qrPromises.get(channelId);
+        if (qrPromise) {
+            try {
+                qrPromise.reject(new Error('Canal removido (forceCleanup)'));
+            } catch (_) {
+                // promise já resolvida/rejeitada anteriormente
+            }
+        }
+        this.qrPromises.delete(channelId);
+
+        logger.warn(`[${channelId}] forceCleanup executado (limpeza total de estado residual em memória)`);
+    }
+
     async regenerateQRCode(channelId) {
         try {
             logger.info(`Regenerando QR Code para canal ${channelId}`);
@@ -404,9 +502,14 @@ class SessionManager {
             const session = this.sessions.get(channelId);
             if (session?.socket) {
                 try {
-                    await session.socket.end();
+                    session.socket.ev.removeAllListeners();
                 } catch (error) {
-                    logger.debug(`Erro ao fechar socket: ${error.message}`);
+                    logger.debug(`Erro ao remover listeners: ${error.message}`);
+                }
+                try {
+                    await withTimeout(session.socket.end(), 5000, `end() regenerateQRCode ${channelId}`);
+                } catch (error) {
+                    logger.debug(`Erro/timeout ao fechar socket: ${error.message}`);
                 }
             }
             this.sessions.delete(channelId);
@@ -460,9 +563,14 @@ class SessionManager {
             const session = this.sessions.get(channelId);
             if (session?.socket) {
                 try {
-                    await session.socket.end();
+                    session.socket.ev.removeAllListeners();
                 } catch (err) {
-                    logger.debug(`[${channelId}] Erro ao fechar socket para reparo: ${err.message}`);
+                    logger.debug(`[${channelId}] Erro ao remover listeners para reparo: ${err.message}`);
+                }
+                try {
+                    await withTimeout(session.socket.end(), 5000, `end() reparo ${channelId}`);
+                } catch (err) {
+                    logger.debug(`[${channelId}] Erro/timeout ao fechar socket para reparo: ${err.message}`);
                 }
             }
             this.sessions.delete(channelId);

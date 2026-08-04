@@ -192,6 +192,10 @@ router.delete('/:channelId', async (req, res) => {
         const channelStatus = sessionManager.getChannelStatus(channelId);
 
         if (!channelStatus) {
+            if (sessionManager.hasAnyTrace(channelId)) {
+                logger.warn(`Canal ${channelId} ausente em 'channels' mas com estado residual - executando forceCleanup`);
+                await sessionManager.forceCleanup(channelId);
+            }
             return res.status(404).json({
                 success: false,
                 error: 'CHANNEL_NOT_FOUND',
